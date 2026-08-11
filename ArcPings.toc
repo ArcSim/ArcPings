@@ -6,6 +6,5 @@
 ## SavedVariables: ArcPingsDB, ArcPingFeedDB
 ## IconTexture: Interface\AddOns\ArcPings\Media\Icon
 ## X-Curse-Project-ID: 1648853
-## X-Wago-ID:
 
 ArcPings.lua
