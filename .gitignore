@@ -1,0 +1,3 @@
+# nothing here ships or is tracked beyond the addon itself
+*.bak
+*.tmp

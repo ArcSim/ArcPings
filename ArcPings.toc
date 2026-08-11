@@ -1,0 +1,11 @@
+## Interface: 120000, 120001, 120005, 120007, 120100
+## Title: Arc Pings
+## Notes: Ping your cooldowns to the group without editing a macro. Ping keys, a ping feed window, and alerts for the 12.1 action-ping system. By the ArcUI author.
+## Author: Arc
+## Version: 1.0.0
+## SavedVariables: ArcPingsDB, ArcPingFeedDB
+## IconTexture: Interface\AddOns\ArcPings\Media\Icon
+## X-Curse-Project-ID: 1648853
+## X-Wago-ID:
+
+ArcPings.lua
