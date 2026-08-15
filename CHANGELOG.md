@@ -1,3 +1,24 @@
+# 1.0.1
+
+### New Features
+- **Collapsible sections**: Every section in the options window now has a header bar you can click to fold it away, so you can shut the parts you are not working on and keep the rest on screen. Your choices are remembered.
+
+### Improvements
+- **New default entry layout**: Out of the box a ping now reads "Arcstorm [Windfury Weapon] will be ready in 0:12!", with the sender sitting just left of the callout and the callout centred. The old default anchored the sender to the timestamp, which is hidden by default. If you have already positioned your own pieces nothing changes; if you have not, this is the new starting point, and Reset Whole Layout gives you the same thing.
+
+### Bug Fixes
+- **Bartender4 keybinds now work**: Ping Keys could not read your keybinds on Bartender4 at all, so spells sitting on those bars simply never pinged. It now reads the binding the way Bartender and LibActionButton actually store it.
+- **Your other bars are no longer ignored**: With Bartender4 or ElvUI installed, only those bars were read and the rest of your bars were dropped. Every bar you have is now checked.
+- **Keys lost to other bar addons**: Fixed "ping every time I press its key" losing its key when a bar addon refreshed its bindings at the same moment. Arc Pings now always applies its keys last.
+- **Wrong spell after rearranging your bars**: Fixed pings using an out-of-date spell or key when a bar addon swapped a button out, which could happen after moving spells around.
+- **Typed window position did nothing**: Fixed the feed window snapping straight back when you typed an X or Y position, or switched a setting back to a per-character override.
+- **Options window jumped while resizing**: Dragging the bottom-right corner moved the whole window instead of just that corner.
+
+### Improvements
+- **Cleaner options panel**: Toggles are now proper checkboxes that sit next to the setting they belong to, lined up in one column, with the description on hover instead of taking up a row. Buttons got a clearer look to match.
+- **Window Layout tab reorganised**: Position and Size are now two side-by-side boxes when the window is wide enough and stack when it is not, sliders stretch to fill the space, and the toggles moved into their own Behavior group.
+- **Ping Keys tab tidied**: The spell picker, the Add By Spell ID box and Rescan Bars are grouped so it reads as two clear rows instead of one crowded one.
+
 # 1.0.0
 
 ### New Features

@@ -63,16 +63,19 @@ local DEFAULTS = {
     -- FREE ROW LAYOUT (Plater-style): each piece anchors LEFT or RIGHT of the
     -- row with fine x/y offsets, arranged by dragging in the options preview.
     -- The ping text always fills the space between the innermost pieces.
-    -- default layout = Blizzard's chat baseline: "10:59 [Sender]: [Spell] is
-    -- ready!" -- timestamp at the left, sender right of it, text flowing after
+    -- DEFAULT LAYOUT (Arc's pick): no timestamp, sender sitting immediately LEFT
+    -- of the callout, and the callout centred -- "Arcstorm [Windfury Weapon] will
+    -- be ready in 0:12!". The old default was Blizzard's chat baseline (timestamp
+    -- left, sender anchored right of the timestamp, text flowing after); with the
+    -- timestamp off by default that left the sender anchored to a hidden piece.
     iconPos = "left",  iconX = 0,  iconY = 0,
     timePos = "left",  timeX = 0, timeY = 0,
-    senderPos = "right", senderX = 0, senderY = 0,
+    senderPos = "left", senderX = 0, senderY = 0,
     -- optional piece-to-piece anchoring: "row" (free placement, default) or
     -- the name of another piece ("icon"/"time"/"sender"/"text"). When
     -- anchored, Pos means which SIDE of the target ("left"/"right" of it),
     -- X is the gap from it and Y rides relative to the target's line.
-    iconAnchorTo = "row", timeAnchorTo = "row", senderAnchorTo = "time",
+    iconAnchorTo = "row", timeAnchorTo = "row", senderAnchorTo = "text",
     -- per-piece sizes: 0 = automatic (icon follows the row, texts follow the
     -- global Font Size); any positive number overrides just that piece
     iconSize = 0, timeSize = 0, senderSize = 0, textSize = 0,
@@ -80,7 +83,7 @@ local DEFAULTS = {
     -- reads from is draggable like any other piece: textPos anchors the
     -- glyphs LEFT or RIGHT, textX pushes them in from that edge (same-line
     -- pieces still push further; the far side keeps auto-truncating)
-    textPos = "left", textX = 0, textY = 0,
+    textPos = "center", textX = 0, textY = 0,
     -- colors ({r,g,b})
     colText   = { 0.949, 0.941, 0.925 },  -- #F2F0EC (Arc's palette)
     colTime   = { 0.75, 0.83, 0.92 },
@@ -147,6 +150,7 @@ local ARC_SOUND_FILES = {
     ["ArcUI: Banana Peel Slip"] = "BananaPeelSlip.ogg", ["ArcUI: Batman Punch"] = "BatmanPunch.ogg",
     ["ArcUI: Blast"] = "Blast.ogg", ["ArcUI: Boxing Arena"] = "BoxingArenaSound.ogg",
     ["ArcUI: Double Whoosh"] = "DoubleWhoosh.ogg", ["ArcUI: Heartbeat"] = "HeartbeatSingle.ogg",
+    ["ArcUI: Kaching"] = "Kaching.ogg",
     ["ArcUI: Sharp Punch"] = "SharpPunch.ogg", ["ArcUI: Shotgun"] = "Shotgun.ogg",
     ["ArcUI: Squeaky Toy"] = "SqueakyToyShort.ogg", ["ArcUI: Squish"] = "SquishFart.ogg",
     ["ArcUI: Torch"] = "Torch.ogg", ["ArcUI: Water Drop"] = "WaterDrop.ogg",
@@ -916,6 +920,20 @@ local function Render()
     local ux, uy = UICenterForWin(win)
     local wcx = win:GetCenter()
     local edgeY = top and win:GetTop() or win:GetBottom()
+    -- ApplyAll has just re-anchored (scope switch, typed X/Y). The frame's live
+    -- geometry is still LAST frame's at this point, so pinning from it would yank
+    -- the window straight back to where it was -- which is exactly why typing a
+    -- position or switching back to an override appeared to do nothing. Trust the
+    -- STORED position for this one pass.
+    if win._arcPosDirty then
+        win._arcPosDirty = nil
+        local sp = (PosStore() or {}).pos
+        if sp and ux and uy then
+            wcx = (sp[1] or 0) + ux
+            local se = top and sp.top or sp.bottom
+            edgeY = se and (se + uy) or edgeY
+        end
+    end
     -- CONSTANT padding: the title floats outside the window, so
     -- unlocking/locking can never shift the entries
     local padTop = 6
@@ -1426,6 +1444,7 @@ ApplyAll = function()
         w.titleHolder:SetFrameStrata(Cfg("strata"))
         w.titleHolder:SetScale(newScale)
         w.titleHolder:SetShown(w._titleWanted and w:IsShown())
+        w._arcPosDirty = true   -- tell Render the stored position wins this pass
         Render()
     elseif win then
         win:Hide()
@@ -1502,34 +1521,81 @@ end
 
 -- Blizzard's action buttons carry `bindingAction` (set in ActionButton.lua), so
 -- read the LIVE frames rather than hardcoding a slot->command table: paging and
--- bar layout stay Blizzard's problem. Third-party bars (ElvUI, Bartender) name
--- their buttons differently and simply won't resolve -- that is what the manual
--- per-spell key override is for.
-local PK_BARS = {
-    "ActionButton", "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
-    "MultiBarRightButton", "MultiBarLeftButton", "MultiBar5Button",
-    "MultiBar6Button", "MultiBar7Button",
-}
+-- bar layout stay Blizzard's problem. The Blizzard names are now just one of
+-- the sources PKCollectButtons unions together (see that function).
+-- ── WHICH BINDING COMMAND DOES THIS BUTTON ANSWER TO? ───────────────────────
+-- There is no single field. Reading only `bindingAction/commandName/
+-- keyBoundTarget` is why Bartender4 never worked: BT4 hands its binding command
+-- to LibActionButton as `buttonConfig.keyBoundTarget`, and LAB DEEP-COPIES that
+-- into `button.config.keyBoundTarget` (Generic:UpdateConfig) -- the plain
+-- `button.keyBoundTarget` field is never written, so every BT4 button resolved
+-- to nil and silently armed nothing.
+--
+-- And even config.keyBoundTarget is not enough: BT4 only maps bars
+-- 1,3,4,5,6,13,14,15 to ACTIONBUTTON-style commands. Bars 2 and 7-10 leave it
+-- FALSE and are reachable only as "CLICK BT4Button<n>:Keybind".
+--
+-- So: build every command this button could answer to, most authoritative
+-- first, and take the first one the game has a key for. The order mirrors
+-- LibActionButton's own GetHotkey (keyBoundTarget, then the CLICK form), so we
+-- agree with the bar addon by construction instead of by guess.
+-- Only PKKeyForButton escapes this scope: the chunk is at Lua's 200-file-level-
+-- local ceiling, and going over it is a LOAD failure that luac -p cannot see.
+local PKKeyForButton
+do
+    local function PushCmd(t, seen, v)
+        if type(v) ~= "string" or v == "" or seen[v] then return end
+        seen[v] = true
+        t[#t + 1] = v
+    end
 
+    local function ButtonCommands(btn)
+        if not btn then return nil end
+        local out, seen = {}, {}
+        local cfg = type(btn.config) == "table" and btn.config or nil
+        -- LibActionButton's own answer. Gated on cfg so we never call the method
+        -- on a Blizzard frame that happens to have a same-named field.
+        if cfg and type(btn.GetBindingAction) == "function" then
+            PushCmd(out, seen, btn:GetBindingAction())
+        end
+        PushCmd(out, seen, btn.bindingAction)          -- Blizzard
+        PushCmd(out, seen, btn.commandName)            -- Blizzard bar init, EllesmereUI
+        PushCmd(out, seen, btn.keyBoundTarget)         -- ElvUI (direct field)
+        PushCmd(out, seen, cfg and cfg.keyBoundTarget) -- LAB config (Bartender4, ElvUI)
+        local name = btn.GetName and btn:GetName()
+        if name then
+            local cb = (cfg and type(cfg.keyBoundClickButton) == "string")
+                       and cfg.keyBoundClickButton
+            PushCmd(out, seen, ("CLICK %s:%s"):format(name, cb or "Keybind"))
+            PushCmd(out, seen, ("CLICK %s:Keybind"):format(name))
+            PushCmd(out, seen, ("CLICK %s:LeftButton"):format(name))
+        end
+        return out
+    end
+
+    -- key, command. Returns the command even when unbound, so callers can store
+    -- a stable one to re-resolve against later.
+    function PKKeyForButton(btn)
+        local cmds = ButtonCommands(btn)
+        if not cmds or #cmds == 0 then return nil, nil end
+        for i = 1, #cmds do
+            local k = GetBindingKey(cmds[i])
+            if k and k ~= "" then return k, cmds[i] end
+        end
+        return nil, cmds[1]
+    end
+end
+
+-- Fallback for entries with no source button (Add-By-ID) or whose button moved:
+-- find the spell on ANY discovered bar button and read that button's key.
 local function PKAutoKey(spellID)
-    for _b = 1, #PK_BARS do
-        for i = 1, 12 do
-            local btn = _G[PK_BARS[_b] .. i]
-            local slot = btn and btn.action
-            if slot and HasAction(slot) then
-                local aType, id = GetActionInfo(slot)
-                local sid
-                if aType == "spell" then
-                    sid = id
-                elseif aType == "macro" then
-                    sid = GetMacroSpell(id)
-                end
-                if sid == spellID then
-                    local cmd = btn.bindingAction or btn.commandName
-                    local k = cmd and GetBindingKey(cmd)
-                    if k then return k end
-                end
-            end
+    local btns = PKCollectButtons and PKCollectButtons()
+    if not btns then return nil end
+    for i = 1, #btns do
+        local sid = PKButtonSubject(btns[i])
+        if sid == spellID then
+            local k = PKKeyForButton(btns[i])
+            if k then return k end
         end
     end
     return nil
@@ -1574,10 +1640,27 @@ end
 -- Compared through PKLiveSpellID so an override pair (base captured, override
 -- live or vice versa) is not a false negative. Entries with no source button
 -- (Add-By-ID) have nothing to verify and are allowed through.
+
+-- A stored button name can point at a frame a bar addon has since REPLACED:
+-- still in _G, but statehidden with a frozen .action. Reading it yields a stale
+-- spell, and GetBindingKey on its command yields a real key for the WRONG
+-- spell. Treat it as gone so the fallback chain finds the live button instead.
+--
+-- MUST stay above PKEntryMatchesBar and PKKeyFor. Defined below them it is not a
+-- known local when their bodies compile, so the call resolves to a nil GLOBAL
+-- and only blows up when that path actually runs ("attempt to call a nil value"
+-- toggling a spell on). luac -p cannot see this; only running it can.
+local function PKLiveButton(name)
+    local btn = name and _G[name]
+    if type(btn) ~= "table" then return nil end
+    if btn.GetAttribute and btn:GetAttribute("statehidden") then return nil end
+    return btn
+end
+
 local function PKEntryMatchesBar(entry)
     if not entry then return false end
-    local btn = entry.btn and _G[entry.btn]
-    if not btn then return true end
+    local btn = PKLiveButton(entry.btn)
+    if not btn then return true end   -- no live source button = nothing to verify
     local sid = PKButtonSubject(btn)
     if not sid then return false end            -- slot emptied in this spec
     if sid == entry.id then return true end
@@ -1585,10 +1668,24 @@ local function PKEntryMatchesBar(entry)
     return PKLiveSpellID(sid) == PKLiveSpellID(entry.id)
 end
 
+-- A stored button name can point at a frame a bar addon has since REPLACED:
+-- still in _G, but statehidden with a frozen .action. Reading it yields a stale
+-- spell, and GetBindingKey on its command yields a real key for the WRONG
+-- spell. Treat it as gone so the fallback chain finds the live button instead.
+-- LIVE BUTTON FIRST. The stored command is a snapshot taken when the spell was
+-- picked; the button itself is the bar addon's current truth, so a rebind, a
+-- bar reconfigure or a profile switch is picked up for free. A stale snapshot
+-- resolving to a key that now casts something else is the dangerous case: in
+-- always-mode that would override the real cast.
 local function PKKeyFor(entry)
+    local btn = PKLiveButton(entry.btn)
+    if btn then
+        local k = PKKeyForButton(btn)
+        if k then return k end
+    end
     if entry.cmd then
         local k = GetBindingKey(entry.cmd)
-        if k then return k end
+        if k and k ~= "" then return k end
     end
     return PKAutoKey(entry.id)
 end
@@ -1703,10 +1800,11 @@ local PK_SNIPPET = [=[
 ]=]
 
 -- the bar state the relays were baked against; any change invalidates them
-local PK_STATE_DRIVER =
-    "[overridebar]o;[vehicleui]v;[possessbar]p;[shapeshift]s;"
-    .. "[bar:2]2;[bar:3]3;[bar:4]4;[bar:5]5;[bar:6]6;1"
-local PK_STATE_SNIPPET = [=[ self:SetAttribute("pkLiveState", newstate) ]=]
+local PK_STATE = {
+    driver = "[overridebar]o;[vehicleui]v;[possessbar]p;[shapeshift]s;"
+             .. "[bar:2]2;[bar:3]3;[bar:4]4;[bar:5]5;[bar:6]6;1",
+    snippet = [=[ self:SetAttribute("pkLiveState", newstate) ]=],
+}
 
 -- HOLDER POOL, one per distinct ping key. Spells can each nominate their own
 -- ping key, so several may be live at once; each holder owns only the spells
@@ -1726,8 +1824,8 @@ local function PKHolder(pingKey)
     h:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -1000, 1000)
     h:RegisterForClicks("AnyDown", "AnyUp")
     h:SetAttribute("_onclick", PK_SNIPPET)
-    h:SetAttribute("_onstate-pkpage", PK_STATE_SNIPPET)
-    RegisterStateDriver(h, "pkpage", PK_STATE_DRIVER)
+    h:SetAttribute("_onstate-pkpage", PK_STATE.snippet)
+    RegisterStateDriver(h, "pkpage", PK_STATE.driver)
     pkHolders[pingKey] = h
     return h
 end
@@ -2040,7 +2138,7 @@ local function PKArmAnySpell(h)
     for i = 1, #btns do
         if n >= PK_LIMIT.ALL then break end
         local sid, cmd, kind = PKButtonSubject(btns[i])
-        local k = cmd and GetBindingKey(cmd)
+        local k = PKKeyForButton(btns[i])
         -- one relay per KEY, not per button: two buttons sharing a key would
         -- otherwise fight over the same binding
         if sid and k and not seen[k] then
@@ -2172,39 +2270,76 @@ end
 local pkSel = { on = false, overlays = {}, buttons = {}, banner = nil }
 local PKSelRefresh   -- fwd
 
--- bar button name prefixes, richest first. LibActionButton bars (ElvUI,
--- Bartender4) replace Blizzard's entirely, so if one is present we use it and
--- skip the Blizzard names.
-local PK_BTN_SETS = {
-    { probe = "ElvUI_Bar1Button1", names = function(list)
-        for bar = 1, 15 do
+-- Every action button we can find, UNIONED. This used to return on the first
+-- matching probe, which dropped Blizzard's bars wholesale the moment Bartender4
+-- was installed -- wrong for anyone running a third-party addon for only some
+-- of their bars.
+local PK_BTN_NAMES = {
+    -- ElvUI: bars 11/12 do not exist
+    function(list)
+        for _, bar in ipairs({ 1,2,3,4,5,6,7,8,9,10,13,14,15 }) do
             for i = 1, 12 do list[#list + 1] = ("ElvUI_Bar%dButton%d"):format(bar, i) end
         end
-    end },
-    { probe = "BT4Button1", names = function(list)
-        for i = 1, 120 do list[#list + 1] = "BT4Button" .. i end
-    end },
-    { probe = "ActionButton1", names = function(list)
-        for _b = 1, #PK_BARS do
-            for i = 1, 12 do list[#list + 1] = PK_BARS[_b] .. i end
+    end,
+    -- Bartender4 numbers by ABSOLUTE slot: bars 13/14/15 live at 145..180, so a
+    -- 1..120 sweep missed three whole bars.
+    function(list)
+        for i = 1, 180 do list[#list + 1] = "BT4Button" .. i end
+    end,
+    -- EllesmereUI, also absolute-slot named
+    function(list)
+        for i = 1, 180 do list[#list + 1] = "EABButton" .. i end
+    end,
+    -- Blizzard
+    function(list)
+        local bars = {
+            "ActionButton", "MultiBarBottomLeftButton", "MultiBarBottomRightButton",
+            "MultiBarRightButton", "MultiBarLeftButton", "MultiBar5Button",
+            "MultiBar6Button", "MultiBar7Button",
+        }
+        for _b = 1, #bars do
+            for i = 1, 12 do list[#list + 1] = bars[_b] .. i end
         end
-    end },
+    end,
 }
 
 PKCollectButtons = function()
-    local out = {}
-    for _s = 1, #PK_BTN_SETS do
-        local set = PK_BTN_SETS[_s]
-        if _G[set.probe] then
-            local names = {}
-            set.names(names)
-            for i = 1, #names do
-                local f = _G[names[i]]
-                if f and f.GetObjectType then out[#out + 1] = f end
+    local out, seen = {}, {}
+    local function take(f)
+        if type(f) ~= "table" or seen[f] or not f.GetObjectType then return end
+        -- Every bar addon marks the Blizzard buttons it replaced with
+        -- statehidden. Those frames keep a STALE .action, so without this filter
+        -- they produce catalog entries for the wrong spell on a real key --
+        -- the nastiest phantom available, since GetBindingKey("ACTIONBUTTON1")
+        -- still answers under Bartender4. LAB never sets it on its own buttons.
+        if f.GetAttribute and f:GetAttribute("statehidden") then return end
+        seen[f] = true
+        out[#out + 1] = f
+    end
+
+    -- 1. LibActionButton's OWN registry: covers every LAB-based bar, present and
+    --    future, with no name guessing. Bartender4 and ElvUI ship separate
+    --    copies under different major strings, so enumerate rather than hardcode.
+    if LibStub and type(LibStub.libs) == "table" then
+        for major, lib in pairs(LibStub.libs) do
+            if type(major) == "string" and major:find("^LibActionButton%-1%.0")
+               and type(lib) == "table" and type(lib.GetAllButtons) == "function" then
+                for b in pairs(lib:GetAllButtons()) do take(b) end
             end
-            return out
         end
     end
+    -- 2. known names, for bars that are not LAB-based (Blizzard, EllesmereUI)
+    local names = {}
+    for i = 1, #PK_BTN_NAMES do PK_BTN_NAMES[i](names) end
+    for i = 1, #names do take(_G[names[i]]) end
+
+    -- the LAB registry is a SET, so its iteration order changes between reloads.
+    -- Sort by name or the catalog's first-come-wins dedupe is nondeterministic.
+    table.sort(out, function(a, b)
+        local an = (a.GetName and a:GetName()) or ""
+        local bn = (b.GetName and b:GetName()) or ""
+        return an < bn
+    end)
     return out
 end
 
@@ -2252,8 +2387,9 @@ PKButtonSubject = function(btn)
         if type(s) == "number" and s > 0 then kind, sid = "spell", s end
     end
     if not sid then return nil end
-    -- keyBoundTarget is LibActionButton's binding command (ElvUI/Bartender)
-    local cmd = btn.bindingAction or btn.commandName or btn.keyBoundTarget
+    -- the command that actually resolves right now (falls back to the first
+    -- candidate when the button is simply unbound) -- see PKButtonCommands
+    local _k, cmd = PKKeyForButton(btn)
     return sid, cmd, kind, btn.GetName and btn:GetName() or nil
 end
 
@@ -2321,14 +2457,14 @@ local function PKBuildCatalog()
             local e = { id = id, kind = kind or "spell", cmd = cmd, btn = bname }
             local nm, icon = PKSubjectInfo(e)
             e.name, e.icon = nm, icon
-            e.key = cmd and GetBindingKey(cmd) or nil
+            e.key = PKKeyForButton(btn)
             pkCatalog[#pkCatalog + 1] = e
         elseif id and seen[id] then
             -- same subject on two bars: keep whichever copy actually has a key
             for j = 1, #pkCatalog do
                 local c = pkCatalog[j]
-                if c.id == id and not c.key and cmd then
-                    local k = GetBindingKey(cmd)
+                if c.id == id and not c.key then
+                    local k = PKKeyForButton(btn)
                     if k then c.key, c.cmd, c.btn = k, cmd, bname end
                     break
                 end
@@ -2347,7 +2483,8 @@ local function PKBuildCatalog()
             local e = { id = t.id, kind = t.kind or "spell", cmd = t.cmd, btn = t.btn, offBar = true }
             local nm, icon = PKSubjectInfo(e)
             e.name, e.icon = nm, icon
-            e.key = (t.cmd and GetBindingKey(t.cmd)) or t.ownKey or nil
+            e.key = (t.btn and PKKeyForButton(_G[t.btn]))
+                    or (t.cmd and GetBindingKey(t.cmd)) or t.ownKey or nil
             pkCatalog[#pkCatalog + 1] = e
         end
     end
@@ -2799,6 +2936,7 @@ StaticPopupDialogs["ARCPINGFEED_RESET_LAYOUT"] = {
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
 
+local pkRebindQueued = false
 local pkEv = CreateFrame("Frame")
 pkEv:RegisterEvent("PLAYER_REGEN_ENABLED")
 pkEv:RegisterEvent("UPDATE_BINDINGS")
@@ -2842,7 +2980,25 @@ pkEv:SetScript("OnEvent", function(_, ev)
     -- auto-resolved keys move when the user rebinds or drags a spell to another
     -- slot; re-arm on those, and flush anything deferred out of combat
     if ev == "PLAYER_REGEN_ENABLED" and not pkDirty then return end
-    if Cfg("pkEnabled") or pkDirty then PKApply() end
+    if not (Cfg("pkEnabled") or pkDirty) then return end
+    -- UPDATE_BINDINGS: bar addons re-apply their OWN override bindings on this
+    -- same event, and handler order between addons is undefined. Ours are
+    -- priority overrides and theirs are not, but priority turned out to be
+    -- recency here, not strict precedence: hold mode worked (it binds inside a
+    -- snippet at key-down, after everyone) while always mode lost the key
+    -- whenever the bar addon happened to run second. Deferring one frame puts
+    -- us last deterministically.
+    if ev == "UPDATE_BINDINGS" then
+        if not pkRebindQueued then
+            pkRebindQueued = true
+            C_Timer.After(0, function()
+                pkRebindQueued = false
+                if Cfg("pkEnabled") or pkDirty then PKApply() end
+            end)
+        end
+        return
+    end
+    PKApply()
 end)
 
 local function RegisterSettings()
@@ -3068,8 +3224,8 @@ end
 -- ── Discord footer ──────────────────────────────────────────────────────────
 -- Same invite across every Arc addon. Addons cannot open URLs, so the button
 -- shows a small popup with the link selected for Ctrl+C.
-local ARC_DISCORD = "https://discord.gg/yMZmnFjUTd"
-local BLURPLE = { 0.345, 0.396, 0.949 }   -- #5865F2
+local DISCORD = { url = "https://discord.gg/yMZmnFjUTd",
+                  blurple = { 0.345, 0.396, 0.949 } }   -- #5865F2
 local discordCopy
 
 local function ShowDiscordCopy(anchor)
@@ -3093,7 +3249,7 @@ local function ShowDiscordCopy(anchor)
     discordCopy:ClearAllPoints()
     discordCopy:SetPoint("CENTER", anchor or UIParent, "CENTER", 0, 0)
     discordCopy:Show(); discordCopy:Raise()
-    discordCopy.box:SetText(ARC_DISCORD); discordCopy.box:SetFocus(); discordCopy.box:HighlightText()
+    discordCopy.box:SetText(DISCORD.url); discordCopy.box:SetFocus(); discordCopy.box:HighlightText()
 end
 
 local function MakeDiscordButton(parent)
@@ -3102,7 +3258,7 @@ local function MakeDiscordButton(parent)
     local fs = b:CreateFontString(nil, "OVERLAY"); fs:SetFont(STANDARD_TEXT_FONT, 11, "")
     fs:SetPoint("CENTER"); fs:SetText("|cff7289DADiscord|r")
     b:SetScript("OnEnter", function()
-        b:SetBackdropBorderColor(BLURPLE[1], BLURPLE[2], BLURPLE[3], 1)
+        b:SetBackdropBorderColor(DISCORD.blurple[1], DISCORD.blurple[2], DISCORD.blurple[3], 1)
         GameTooltip:SetOwner(b, "ANCHOR_BOTTOM")
         GameTooltip:AddLine("Join the Arc UI Discord", 1, 1, 1)
         GameTooltip:AddLine("Questions, help, and updates", 0.7, 0.7, 0.7)
@@ -3145,6 +3301,7 @@ local LAY = {
     ctrl    = 230,  -- full-width section: the label column is everything left of this
     half    = 175,  -- side-by-side section: half the room, so a shorter column
     halfBtn = 110,  -- side-by-side section: a button starts here (it is 100 wide)
+    hdr     = 22,   -- section header bar height (title + expand arrow)
     twoA    = 230,  -- two-up row: first control -- SAME column as ctrl so single + paired toggles line up
     twoBLab = 268,  -- two-up row: second label (clear of the first control)
     twoB    = 436,  -- two-up row: second control (fits a checkbox or swatch; row is 468 at min panel width)
@@ -3188,18 +3345,114 @@ end
 -- side = "L" or "R" puts two boxes on ONE line, each half the page wide, sharing
 -- a top edge. Anchored relative to the page's TOP (its centre x), so this needs
 -- no measurement either.
+-- COLLAPSIBLE: clicking the title rolls the box up. The box clips its children,
+-- so shrinking its height wipes the rows behind the top edge like a blind rather
+-- than letting them spill out. `_f` is the open fraction (1 open, 0 shut) that
+-- LayoutPage multiplies the content height by; CollapseTick eases it.
+-- State rides on LAY, not on new file-level locals: this chunk sits AT Lua's
+-- 200-local ceiling, and going over is a hard load failure. LAY.canims = sections
+-- currently moving, LAY.cdriver = the shared OnUpdate that only exists mid-move.
+local LayoutPage             -- fwd (the ticker relayouts its page each step)
+
+-- OPTION D: every titled section gets a real HEADER BAR -- a filled strip the
+-- width of the box, title at the left, Blizzard's own expand arrow pinned to the
+-- right edge (their CollapseButtonTemplate anchors it RIGHT, x=-6, deliberately
+-- away from the label). The whole bar is the click target. Collapsed, the bar
+-- stands alone with a cyan underline so a shut section still reads as Arc.
 local function Section(pg, text, visibleFn, side, ctrlX)
-    local title = pg:CreateFontString(nil, "OVERLAY")
-    title:SetFont(STANDARD_TEXT_FONT, 11, "")
-    title:SetTextColor(COL.arc[1], COL.arc[2], COL.arc[3]); title:SetText(text)
+    local titled = (text ~= nil and text ~= "")
     local box = CreateFrame("Frame", nil, pg, "BackdropTemplate")
     Skin(box, COL.box, COL.line)
+    box:SetClipsChildren(true)   -- rows roll away behind the edge as it shrinks
     local sec = {
-        title = title, box = box, rows = {}, visibleFn = visibleFn, side = side,
+        box = box, rows = {}, visibleFn = visibleFn, side = side,
         -- a slider-only box passes its own tight ctrlX so the control hugs the
         -- short label (X / Width) instead of sitting out at the toggle column
         ctrlX = ctrlX or (side and LAY.half) or LAY.ctrl,
+        collapsed = false, _f = 1,
     }
+
+    -- An untitled section is a plain strip (the Ping Keys status band): no bar,
+    -- nothing to click. It keeps an empty FontString so LayoutPage's `titled`
+    -- test and the old anchoring path still work unchanged.
+    if not titled then
+        local t = pg:CreateFontString(nil, "OVERLAY")
+        t:SetFont(STANDARD_TEXT_FONT, 11, ""); t:SetText("")
+        sec.title = t
+    else
+        local bar = CreateFrame("Button", nil, pg, "BackdropTemplate")
+        bar:SetHeight(LAY.hdr)
+        Skin(bar, COL.panel, COL.line)
+        local title = bar:CreateFontString(nil, "OVERLAY")
+        title:SetFont(STANDARD_TEXT_FONT, 11, "")
+        title:SetPoint("LEFT", 9, 0)
+        title:SetTextColor(COL.arc[1], COL.arc[2], COL.arc[3])
+        title:SetText(text)
+        -- Blizzard's list-expand arrow, tinted to Arc cyan: one atlas points
+        -- right (shut), the other down (open), so no rotation maths of ours.
+        local arrow = bar:CreateTexture(nil, "OVERLAY")
+        arrow:SetSize(11, 11)
+        arrow:SetPoint("RIGHT", -7, 0)
+        arrow:SetVertexColor(COL.arc[1], COL.arc[2], COL.arc[3], 1)
+        -- cyan underline, shown only while shut
+        local rule = bar:CreateTexture(nil, "OVERLAY")
+        rule:SetTexture(WHITE)
+        rule:SetVertexColor(COL.arc[1], COL.arc[2], COL.arc[3], 1)
+        rule:SetPoint("BOTTOMLEFT", 1, 1); rule:SetPoint("BOTTOMRIGHT", -1, 1)
+        rule:SetHeight(1); rule:Hide()
+        sec.hit, sec.title, sec.arrow, sec.rule = bar, title, arrow, rule
+        local function paint(hot)
+            local c = hot and COL.ink or COL.arc
+            title:SetTextColor(c[1], c[2], c[3])
+            arrow:SetVertexColor(c[1], c[2], c[3], 1)
+            bar:SetBackdropColor(hot and COL.btnHover[1] or COL.panel[1],
+                                 hot and COL.btnHover[2] or COL.panel[2],
+                                 hot and COL.btnHover[3] or COL.panel[3], 1)
+        end
+        bar:SetScript("OnEnter", function() paint(true) end)
+        bar:SetScript("OnLeave", function() paint(false) end)
+        local hit = bar
+        hit:SetScript("OnClick", function()
+            CloseDropdown()
+            sec.collapsed = not sec.collapsed
+            -- remembered per section title, so the shape survives a reload
+            local store = DB()
+            store.secCollapsed = store.secCollapsed or {}
+            store.secCollapsed[text] = sec.collapsed or nil
+            PlaySound(sec.collapsed and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_OFF
+                                     or SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON, "Master")
+            -- start (or join) the shared animation
+            sec._page = pg
+            LAY.canims = LAY.canims or {}
+            LAY.canims[sec] = true
+            if not LAY.cdriver then
+                LAY.cdriver = CreateFrame("Frame")
+                LAY.cdriver:SetScript("OnUpdate", function(drv, elapsed)
+                    local pages, any = {}, false
+                    for s in pairs(LAY.canims) do
+                        local target = s.collapsed and 0 or 1
+                        local f = s._f or (1 - target)
+                        local step = elapsed / 0.16   -- ~0.16s across the full travel
+                        if f < target then f = math.min(target, f + step)
+                        else f = math.max(target, f - step) end
+                        s._f = f
+                        if f == target then LAY.canims[s] = nil else any = true end
+                        if s._page then pages[s._page] = true end
+                    end
+                    for pg2 in pairs(pages) do LayoutPage(pg2) end
+                    -- ZERO IDLE COST: the driver dies the moment nothing moves
+                    if not any then
+                        drv:SetScript("OnUpdate", nil)
+                        LAY.cdriver = nil
+                    end
+                end)
+            end
+        end)
+        -- restore the saved shape (no animation on first build)
+        local saved = (DB().secCollapsed or {})[text]
+        if saved then sec.collapsed, sec._f = true, 0 end
+    end
+
     pg._sections[#pg._sections + 1] = sec
     pg._curSection = sec
     return box
@@ -3217,7 +3470,10 @@ end
 
 -- _startY lets a page reserve room at the top for something absolutely placed
 -- (the Entry Layout drag canvas) before its sections begin.
-local function LayoutPage(pg)
+-- ASSIGNMENT, not `local function`: LayoutPage is forward-declared above so the
+-- collapse ticker can call it. `local function` here would declare a SECOND local
+-- and leave the ticker holding the nil one.
+LayoutPage = function(pg)
     if not (pg and pg._sections) then return end
     local y = pg._startY or -4
     -- rows are ALWAYS the full width of whatever contains them. Their controls
@@ -3244,16 +3500,37 @@ local function LayoutPage(pg)
             elseif side == "R" then pairTopY, pairBottomY = nil, nil end
         else
             local topY = (side == "R" and pairTopY) or y
-            local titled = (sec.title:GetText() or "") ~= ""
-            sec.title:ClearAllPoints()
-            if side == "R" then
-                sec.title:SetPoint("TOPLEFT", pg, "TOP", 10, topY - 2)
+            local titled = sec.hit ~= nil
+            -- HEADER BAR spans the section exactly like the box below it, so the
+            -- two read as one unit. Untitled sections keep the old bare layout.
+            if titled then
+                sec.hit:ClearAllPoints()
+                if side == "L" then
+                    sec.hit:SetPoint("TOPLEFT", 0, topY)
+                    sec.hit:SetPoint("TOPRIGHT", pg, "TOP", -6, topY)
+                elseif side == "R" then
+                    sec.hit:SetPoint("TOPLEFT", pg, "TOP", 6, topY)
+                    sec.hit:SetPoint("TOPRIGHT", 0, topY)
+                else
+                    sec.hit:SetPoint("TOPLEFT", 0, topY)
+                    sec.hit:SetPoint("TOPRIGHT", 0, topY)
+                end
+                sec.hit:Show()
+                sec.arrow:SetAtlas(sec.collapsed and "Options_ListExpand_Right"
+                                                  or "Options_ListExpand_Right_Expanded")
+                sec.arrow:SetVertexColor(COL.arc[1], COL.arc[2], COL.arc[3], 1)
+                sec.rule:SetShown(sec.collapsed)
             else
-                sec.title:SetPoint("TOPLEFT", 4, topY - 2)
+                sec.title:ClearAllPoints()
+                if side == "R" then
+                    sec.title:SetPoint("TOPLEFT", pg, "TOP", 10, topY - 2)
+                else
+                    sec.title:SetPoint("TOPLEFT", 4, topY - 2)
+                end
+                sec.title:Hide()
             end
-            sec.title:SetShown(titled)
-            sec.box:Show()
-            local boxTop = topY - (titled and 18 or 0)
+            sec.box:SetShown(not (sec.collapsed and (sec._f or 0) <= 0))
+            local boxTop = topY - (titled and LAY.hdr or 0)
             sec.box:ClearAllPoints()
             if side == "L" then
                 sec.box:SetPoint("TOPLEFT", 0, boxTop)
@@ -3299,8 +3576,17 @@ local function LayoutPage(pg)
                     row:Hide()
                 end
             end
-            sec.box:SetHeight(math.max(10, -by + 6))
-            local bottom = boxTop - (-by + 6) - 12
+            -- COLLAPSE: scale the measured content height by the open fraction.
+            -- Rows keep their real positions and the box clips them, so they roll
+            -- away behind the top edge instead of squashing. Everything below
+            -- reflows off `shownH`, which is what makes the page slide up.
+            local fullH  = math.max(10, -by + 6)
+            local f      = sec._f or 1
+            local shownH = (f >= 1) and fullH or math.max(2, math.floor(fullH * f + 0.5))
+            sec.box:SetHeight(shownH)
+            -- With a header bar the cyan cue lives on the BAR (its underline), so
+            -- the box just rolls away plainly underneath it.
+            local bottom = boxTop - (sec.box:IsShown() and shownH or 0) - 12
             if side == "L" then
                 pairTopY, pairBottomY = topY, bottom
                 y = bottom                                   -- provisional: no R may follow
